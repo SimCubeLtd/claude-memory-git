@@ -1,0 +1,78 @@
+name: Release
+
+# Build cross-platform binaries and attach them to the GitHub Release when one
+# is published (i.e. you cut a release/tag in the GitHub UI or via the API).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write # required to upload assets onto the release
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            goos: darwin
+            goarch: arm64
+            ext: ""
+          - name: linux-x64
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - name: windows-x64
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod # keep the toolchain in lockstep with the module
+          cache: true
+
+      - name: Run tests
+        # Cross-compilation still benefits from a sanity test pass on the host.
+        run: go test ./...
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          COMMIT="${GITHUB_SHA::12}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          PKG="github.com/SimCubeLtd/mneme/cmd/mneme"
+          LDFLAGS="-s -w \
+            -X main.version=${VERSION} \
+            -X main.commit=${COMMIT} \
+            -X main.date=${DATE}"
+          OUT="mneme-${VERSION}-${{ matrix.name }}${{ matrix.ext }}"
+          go build -trimpath -ldflags "${LDFLAGS}" -o "${OUT}" "${PKG}"
+          echo "ASSET=${OUT}" >> "${GITHUB_ENV}"
+
+      - name: Generate checksum
+        run: |
+          set -euo pipefail
+          sha256sum "${ASSET}" > "${ASSET}.sha256"
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${ASSET}" "${ASSET}.sha256" \
+            --clobber
